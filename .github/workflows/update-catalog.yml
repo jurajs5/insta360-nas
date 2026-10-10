@@ -1,0 +1,120 @@
+name: Publish DSM update catalog
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: dsm-update-catalog
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || (!github.event.release.prerelease && !github.event.release.draft)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+      - name: Download latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          gh api "repos/$REPO/releases/latest" > stage/release.json
+          tag=$(python3 -c 'import json; print(json.load(open("stage/release.json"))["tag_name"])')
+          gh release download "$tag" --repo "$REPO" --pattern 'Insta360-NAS-DS916-*.spk' --pattern 'Insta360-NAS-DS916-*.sha256' --dir stage
+      - name: Validate package and generate DSM catalog
+        run: |
+          cat > make_catalog.py <<'PYTHON'
+          """Build a DSM catalog from the latest public, stable GitHub release."""
+          import argparse
+          import hashlib
+          import html
+          import json
+          from pathlib import Path
+          import re
+          import tarfile
+          from urllib.parse import quote
+          
+          REPOSITORY = 'jurajs5/insta360-nas'
+          
+          def catalog(release, stage, output):
+              if release.get('draft') or release.get('prerelease'):
+                  raise ValueError('Only published stable releases may become an update source')
+              tag = release['tag_name']
+              if not re.fullmatch(r'v\d+\.\d+\.\d+', tag):
+                  raise ValueError('Expected tag vMAJOR.MINOR.PATCH')
+              filename = 'Insta360-NAS-DS916-'+tag[1:]+'.spk'
+              assets = {a['name']: a for a in release['assets']}
+              link = f'https://github.com/{REPOSITORY}/releases/download/{quote(tag)}/{filename}'
+              if assets.get(filename, {}).get('browser_download_url') != link:
+                  raise ValueError('Missing package or unexpected download destination')
+              sha_name = filename.removesuffix('.spk')+'.sha256'
+              if sha_name not in assets:
+                  raise ValueError('Missing release checksum')
+              file = stage/filename
+              raw = file.read_bytes()
+              if len(raw) > 128*1024*1024:
+                  raise ValueError('Package too large')
+              checksum = (stage/sha_name).read_text().strip().split()
+              if len(checksum) != 2 or checksum[1] != filename or checksum[0] != hashlib.sha256(raw).hexdigest():
+                  raise ValueError('SHA256 does not match the published package')
+              with tarfile.open(file) as archive:
+                  info_bytes = archive.extractfile('INFO').read(65536)
+                  info = dict(re.findall(r'^([a-z_]+)="([^"\r\n]*)"$', info_bytes.decode(), re.M))
+                  if (info.get('package') != 'insta360nas' or info.get('arch') != 'braswell' or
+                          not re.fullmatch(re.escape(tag[1:])+r'-\d+', info.get('version',''))):
+                      raise ValueError('Unexpected package, platform or version')
+                  privilege = json.loads(archive.extractfile('conf/privilege').read(65536))
+                  expected = {'defaults':{'run-as':'package'},'username':'insta360nas','groupname':'insta360nas'}
+                  if privilege != expected or any(m.mode & 0o6000 for m in archive.getmembers()):
+                      raise ValueError('Package privilege policy failed')
+                  payload = archive.extractfile('package.tgz').read()
+                  if hashlib.md5(payload).hexdigest() != info.get('checksum'):
+                      raise ValueError('Package payload checksum failed')
+                  icon = archive.extractfile('PACKAGE_ICON_256.PNG').read(1048576)
+                  if not icon.startswith(b'\x89PNG\r\n\x1a\n'):
+                      raise ValueError('Invalid package icon')
+              base = 'https://jurajs5.github.io/insta360-nas'
+              package = {
+                  'package':'insta360nas','version':info['version'],'dname':'Insta360 NAS',
+                  'desc':info['description'],'maintainer':'jurajs5','maintainer_url':f'https://github.com/{REPOSITORY}',
+                  'distributor':'jurajs5','distributor_url':f'https://github.com/{REPOSITORY}',
+                  'thumbnail':[base+'/icon-256.png'],'link':link,'md5':hashlib.md5(raw).hexdigest(),
+                  'sha256':checksum[0],'size':len(raw),'qinst':True,'qstart':True,'qupgrade':True,
+                  'start':True,'thirdparty':True,'beta':False
+              }
+              output.mkdir(parents=True,exist_ok=True)
+              (output/'braswell').mkdir(exist_ok=True)
+              body = json.dumps({'packages':[package]},ensure_ascii=False,indent=2)+'\n'
+              (output/'braswell/index.json').write_text(body)
+              (output/'index.json').write_text(body)
+              (output/'icon-256.png').write_bytes(icon)
+              (output/'.nojekyll').touch()
+              (output/'index.html').write_text(f'''<!doctype html><html lang="cs"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Insta360 NAS — aktualizace / updates</title><body><h1>Insta360 NAS {html.escape(info['version'])}</h1><p>Synology DS916+ · Braswell · DSM {html.escape(info['os_min_ver'])}+</p><h2>Zdroj balíčků / Package source</h2><p><code>{base}/braswell/index.json</code></p><p>DSM: Centrum balíčků → Nastavení → Zdroje balíčků → Přidat. Potom v Automatické aktualizace povol Insta360 NAS.</p><p>DSM: Package Center → Settings → Package Sources → Add. Then enable Insta360 NAS in Auto-update.</p><p><a href="{html.escape(link)}">Stáhnout balíček / Download package</a></p><p><a href="https://github.com/{REPOSITORY}/releases">Vydání / Releases</a></p></body></html>''')
+              return package
+          
+          if __name__ == '__main__':
+              parser=argparse.ArgumentParser()
+              parser.add_argument('--release',type=Path,required=True)
+              parser.add_argument('--stage',type=Path,required=True)
+              parser.add_argument('--output',type=Path,required=True)
+              args=parser.parse_args()
+              p=catalog(json.loads(args.release.read_text()),args.stage,args.output)
+              print('Validated DSM catalog:',p['version'])
+          PYTHON
+          python3 make_catalog.py --release stage/release.json --stage stage --output site
+      - name: Upload catalog
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - name: Deploy Pages
+        id: deploy
+        uses: actions/deploy-pages@v5
