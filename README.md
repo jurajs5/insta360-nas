@@ -10,13 +10,13 @@ Download the `.spk` from [Releases](https://github.com/jurajs5/insta360-nas/rele
 
 ## Automatické aktualizace / Automatic updates
 
-Once the first release and GitHub Pages deployment finish, add this source in DSM **Package Center → Settings → Package Sources**:
+Release 2.4.13 and the GitHub Pages catalog are published. Add this source in DSM **Package Center → Settings → Package Sources**:
 
 ```
 https://jurajs5.github.io/insta360-nas/braswell/index.json
 ```
 
-Then enable Insta360 NAS under **Settings → Auto-update**. DSM decides when to check and install updates; the application runs without root privileges. If the checkbox is unavailable, automatic installation is not supported by that DSM configuration; the same source can still be used for update detection and the Update button. This delivery pipeline and its catalog are checked locally; real DSM installation and auto-update eligibility must be verified on the NAS.
+Then enable Insta360 NAS under **Settings → Auto-update**. DSM decides when to check and install updates; the application runs without root privileges. If the checkbox is unavailable, automatic installation is not supported by that DSM configuration; the same source can still be used for update detection and the Update button. The delivery pipeline completed successfully on GitHub; real DSM installation and auto-update eligibility must be verified on the NAS.
 
 An update restarts the service. Cloud credentials, settings, manifests and partial downloads are retained. An interrupted video queue requires confirmation to resume.
 
@@ -24,7 +24,7 @@ An update restarts the service. Cloud credentials, settings, manifests and parti
 
 1. Enable **Settings → Pages → Source: GitHub Actions** once.
 2. Publish a stable GitHub Release tagged `vMAJOR.MINOR.PATCH` with `Insta360-NAS-DS916-MAJOR.MINOR.PATCH.spk` and its `.sha256` companion. Attach the source ZIP as well.
-3. The **Publish DSM update catalog** workflow downloads the latest stable release, validates checksums, package identity, Braswell architecture and package privilege policy, then deploys the package catalog to GitHub Pages.
+3. Every hour, the **Publish DSM update catalog** workflow downloads the latest stable release, validates checksums, package identity, Braswell architecture and package privilege policy, then deploys the package catalog to GitHub Pages. Scheduled GitHub runs can be delayed. To publish immediately, use Actions → Publish DSM update catalog → Run workflow on main.
 
 Draft or prerelease packages are not offered as automatic updates. A failure leaves the previous deployed catalog in place. Publishing new application versions requires building and testing the application; this workflow does not generate application code or promise unattended development.
 
